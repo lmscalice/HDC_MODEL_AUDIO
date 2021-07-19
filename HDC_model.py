@@ -92,8 +92,17 @@ def checkVector(classHVs, inputHV):
 def associateSearch(HV1, HV2):
     return np.dot(HV1, HV2)/(np.linalg.norm(HV1) * np.linalg.norm(HV2) + 0.0)
 
+### Save AM and Item Memory into file
+def savemodel(am, baseVector, levelVector, levelList, fpath):
+    f = open(fpath, 'wb')
+    pickle.dump([am, baseVector, levelVector, levelList], f)
+    f.close()
+    return 0
+
 def main(dimension, iteration, training, testing):
+    # initializes the HDC object and its values
     HDC = HyperDimensionalComputing(dimension, totalPos = training[0].shape[1], totalLevel = 100, datatype = np.int16, buffer = [-1.0, 1.0], cuda = False)
+    # separates the training images/labels and the testing images/labels
     trainingData, testingData, trainLabel, testLabel = training[0], testing[0], genLabel(training[1]), genLabel(testing[1])
     classHV = dict([(x, np.array([0 for _ in range(dimension)])) for x in range(1, len(np.unique(testLabel)) + 1)])
     baseVector = HDC.genBaseVector(HDC.P, -1, HDC.dim)
@@ -104,18 +113,22 @@ def main(dimension, iteration, training, testing):
     print('One shot accuracy:', currAcc)
     print('-------- Retrain', iteration, 'epochs --------')
     currWeight, currAcc, bestWeight, bestAcc = HDC.retraining(currWeight, HVector, trainLabel , HVector_test, testLabel, iteration)
+    
+    ### save the assoc memory and item memory to a file
+    fpath = './model_best'
+    savemodel(bestWeight, baseVector, levelVector, HDC.levelList, fpath)
     return
 
 
 #HDC model
 class HyperDimensionalComputing(object):
     def __init__(self, dimension, totalPos, totalLevel, datatype, buffer, *string, cuda = False):
-        self.P = totalPos
-        self.Q = totalLevel
-        self.dim = dimension
-        self.buffer = buffer
-        self.datatype = datatype
-        self.levelList = getlevelList(totalLevel, self.buffer[0], self.buffer[1])
+        self.P = totalPos                                                               # total number of features
+        self.Q = totalLevel                                                             # number of levels in the buffer
+        self.dim = dimension                                                            # Dimension of hyper-vector using in HDC model
+        self.buffer = buffer                                                            # interval the feature values stay within
+        self.datatype = datatype                                                        # data is of integer type
+        self.levelList = getlevelList(totalLevel, self.buffer[0], self.buffer[1])       # gets the list of values in the buffer interval 
         
     def genBaseVector(self, totalPos, baseVal, dimension):
         D = dimension
