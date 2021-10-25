@@ -13,7 +13,7 @@ HD_ISOLET: Speech recognition using Hyperdimensional Computing
  - pip install -r requirement.txt
 
 ### Run the application.
- - python HDC_model.py --app_ isolet --iter_ 20 --dimension_ 10000
+ - python HDC_model.py --app_ ./spoken-digit-dataset/recordings/ --iter_ 20 --dimension_ 10000
 
  - Different hyperparameters
     - 1.app_: Training and testing dataset
