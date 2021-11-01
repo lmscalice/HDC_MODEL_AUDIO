@@ -1,6 +1,7 @@
 import copy
 import pickle
 import librosa
+import pandas as pd
 import scipy
 import scipy.io.wavfile
 from scipy.fftpack import dct
@@ -69,11 +70,11 @@ def convertToMFCC2(sample_rate, signal):
     mfcc -= (np.mean(mfcc, axis=0) + 1e-8)
 
     # MFCC-2
-    band_range_percentages, band_sums, band_mean, band_std_dev = [], [], [], []
+    band_range_percentages, band_sums, band_sums_order, band_mean, band_std_dev = [], [], [], [], []
     num_frames = mfcc.shape[0]
     for y in range(mfcc.shape[1]):
         # Get band percentages for new set of classes between min and max
-        class_tallies = [0] * 18
+        class_tallies = [0] * 25
         max = np.amax(mfcc[:,y])
         min = np.amin(mfcc[:,y])
         difference = max-min
@@ -97,17 +98,21 @@ def convertToMFCC2(sample_rate, signal):
 
         # Get standard deviation of values in band
         band_std_dev.append(np.std(mfcc[:,y]))
+    
+    band_sums_order = np.argsort(band_sums)
+    band_sums_order = band_sums_order + 1
 
     # Concatenate features for sample
-    return np.concatenate((band_range_percentages, band_sums, band_mean, band_std_dev), axis=None)
+    return np.concatenate((band_range_percentages, band_sums_order, band_mean, band_std_dev), axis=None)
 
 # Normalizes data between -1 and 1
-def normalizeData(data):
-    return MinMaxScaler((-1,1)).fit_transform(data)
+#def normalizeData(data, new_min=-1, new_max=1):
+    #return MinMaxScaler((-1,1)).fit_transform(data)
+#    return (((data - data.min())* (new_max - new_min))/ (data.max() - data.min()) ) + new_min
 
 # Loading training and testing data
 def dataLoader(filepath):
-    num_features = 252
+    num_features = 336
     Xtr = np.empty((0,num_features), int)
     Xts = np.empty((0,num_features), int)
     ytrain = []
@@ -125,12 +130,37 @@ def dataLoader(filepath):
             ytrain.append(classification)
             test_samples, test_samp_rate = librosa.load(filepath+filename, sr = None, mono =True, offset = 0.0, duration = None)
             mfccs = convertToMFCC2(test_samp_rate, test_samples)
-            Xtr = np.append(Xtr, np.array([mfccs]), axis=0)   
-    Xtr= normalizeData(Xtr)
-    Xts= normalizeData(Xts)
+            Xtr = np.append(Xtr, np.array([mfccs]), axis=0) 
+    
+    new_train= np.append(Xtr, np.array([ytrain]).reshape(-1,1), axis=1)
+    # print(new_train)
+    
+    columns = []
+    for n in np.arange(1, 338, 1):
+        columns.append(str(n))
+    # print(np.array([columns]).shape)
+    # print(columns)
+    df = pd.DataFrame(new_train, columns=columns)
+    df= df.astype(float)
+    # print(df)
+    corr_matrix=df.corr()
+    # print(corr_matrix)
+    print(corr_matrix['337'].sort_values(ascending=False))
+
+    outcomes = np.array([corr_matrix['253']])
+    print(outcomes)
+    indices_nan = np.argwhere(np.isnan(outcomes))
+    indices_bad = np.argwhere(np.logical_and(abs(outcomes)< 0.009, abs(outcomes) >= 0) )
+    indices_to_delete = np.sort(np.concatenate([indices_nan[:,1],indices_bad[:,1]]))
+    Xtr_new = np.delete(Xtr, indices_to_delete, axis=1)
+    Xts_new = np.delete(Xts, indices_to_delete, axis=1)
+
+    scaler = MinMaxScaler((-1,1)).fit(Xtr_new)      
+    Xtr_new= scaler.transform(Xtr_new)
+    Xts_new= scaler.transform(Xts_new)
     ytr = np.array(ytrain)
     yts = np.array(ytest) 
-    return Xtr, Xts, ytr, yts
+    return Xtr_new, Xts_new, ytr, yts
 
 # Binary search
 def numToKey(value, levelList):
@@ -181,25 +211,27 @@ def HV_encoding(HDC, baseVector, levelVector, trainingData, testingData):
     print(trainingData.shape[0])
     for i in range(trainingData.shape[0]):
         trainData = trainingData[i, :]
+        #print(len(trainData))
         hdv = HDC.encoding(dimension, trainData, levelVector, baseVector)
+        #print("encode fininished")
         hdv = quantz(hdv)
         #hdv[hdv >= 0 ] = 1
         #hdv[hdv == 0] = 0
         #hdv[hdv < 0] = -1
         
         HV_train.append(hdv)
-        print("running....")
-        print(i)
-    print("done")
+        #print("running....")
+        #print(i)
+    #print("done")
     print(testingData.shape[0])
     print(testingData)
     for i in range(testingData.shape[0]):
         testData = testingData[i, :]
-        print("about to run encode")
+        #print("about to run encode")
         hdv = HDC.encoding(dimension, testData, levelVector, baseVector)
-        print("ran encode")
+        #print("ran encode")
         hdv = quantz(hdv)
-        print("running here")
+        #print("running here")
         #hdv[hdv >= 0 ] = 1
         #hdv[hdv == 0] = 0
         #hdv[hdv < 0] = -1
@@ -211,6 +243,7 @@ def checkVector(classHVs, inputHV):
     maximum = np.NINF
     count, checklist = {} ,[]
     for key in classHVs.keys():
+        #print(classHVs[key])
         count[key] = associateSearch(classHVs[key], inputHV)
         # inner_product(classHVs[key], inputHV)
         checklist.append([key, associateSearch(classHVs[key], inputHV)])
@@ -232,11 +265,11 @@ def savemodel(am, baseVector, levelVector, levelList, fpath):
 
 def main(dimension, iteration, training, testing):
     # initializes the HDC object and its values
-    HDC = HyperDimensionalComputing(dimension, totalPos = training[0].shape[1], totalLevel = 100, datatype = np.int16, buffer = [-1.0, 1.0], cuda = False)
+    HDC = HyperDimensionalComputing(dimension, totalPos = training[0].shape[1], totalLevel = 5000, datatype = np.int16, buffer = [-1.5, 1.5], cuda = False)
     # separates the training images/labels and the testing images/labels
     trainingData, testingData, trainLabel, testLabel = training[0], testing[0], genLabel(training[1]), genLabel(testing[1])
     print("Running ...")
-    classHV = dict([(x, np.array([0 for _ in range(dimension)])) for x in range(1, len(np.unique(testLabel)) + 1)])
+    classHV = dict([(x, np.array([0 for _ in range(dimension)])) for x in range(0, len(np.unique(testLabel)) + 1)])
     print("Still Running 1...")
     baseVector = HDC.genBaseVector(HDC.P, -1, HDC.dim)
     print("Still Running 2...")
@@ -302,6 +335,7 @@ class HyperDimensionalComputing(object):
     def encoding(self, dimension, label, levelHVs, baseHVs):
         HDVector = np.zeros(dimension, dtype = self.datatype)
         for keyVal in range(len(label)):
+            #print(i, " looping ", keyVal, " ", label[keyVal])
             key = numToKey(label[keyVal], self.levelList)
             baseHV = baseHVs[keyVal]
             levelHV = levelHVs[key]
@@ -313,7 +347,7 @@ class HyperDimensionalComputing(object):
         classHVs = copy.deepcopy(classHV)
         for i in range(len(inputLabels)):
             name = inputLabels[i]
-            classHVs[name] = np.array(classHVs[name]) + np.array(inputHVs[i])
+            classHVs[name] = np.array(classHVs[int(name)]) + np.array(inputHVs[i])
         return classHVs
 
     def oneShotTraining(self, classHVs, trainHVs, trainLabels, testHVs, testLabels,):
