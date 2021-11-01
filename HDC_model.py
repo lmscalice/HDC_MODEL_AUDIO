@@ -74,7 +74,7 @@ def convertToMFCC2(sample_rate, signal):
     num_frames = mfcc.shape[0]
     for y in range(mfcc.shape[1]):
         # Get band percentages for new set of classes between min and max
-        class_tallies = [0] * 25
+        class_tallies = [0] * 30
         max = np.amax(mfcc[:,y])
         min = np.amin(mfcc[:,y])
         difference = max-min
@@ -112,7 +112,7 @@ def convertToMFCC2(sample_rate, signal):
 
 # Loading training and testing data
 def dataLoader(filepath):
-    num_features = 336
+    num_features = 396
     Xtr = np.empty((0,num_features), int)
     Xts = np.empty((0,num_features), int)
     ytrain = []
@@ -136,7 +136,7 @@ def dataLoader(filepath):
     # print(new_train)
     
     columns = []
-    for n in np.arange(1, 338, 1):
+    for n in np.arange(1, num_features+2, 1):
         columns.append(str(n))
     # print(np.array([columns]).shape)
     # print(columns)
@@ -145,19 +145,26 @@ def dataLoader(filepath):
     # print(df)
     corr_matrix=df.corr()
     # print(corr_matrix)
-    print(corr_matrix['337'].sort_values(ascending=False))
+    print(corr_matrix['397'].sort_values(ascending=False))
 
-    outcomes = np.array([corr_matrix['253']])
+    outcomes = np.array([corr_matrix['397']])
     print(outcomes)
     indices_nan = np.argwhere(np.isnan(outcomes))
-    indices_bad = np.argwhere(np.logical_and(abs(outcomes)< 0.009, abs(outcomes) >= 0) )
+    indices_bad = np.argwhere(np.logical_and(abs(outcomes)< 0.01, abs(outcomes) >= 0) )
     indices_to_delete = np.sort(np.concatenate([indices_nan[:,1],indices_bad[:,1]]))
     Xtr_new = np.delete(Xtr, indices_to_delete, axis=1)
     Xts_new = np.delete(Xts, indices_to_delete, axis=1)
 
-    scaler = MinMaxScaler((-1,1)).fit(Xtr_new)      
-    Xtr_new= scaler.transform(Xtr_new)
-    Xts_new= scaler.transform(Xts_new)
+    # scaler = MinMaxScaler((-1,1)).fit(Xtr_new)      
+    # Xtr_new= scaler.transform(Xtr_new)
+    # Xts_new= scaler.transform(Xts_new)
+    tr_max = Xtr_new.max()
+    tr_min = Xtr_new.min()
+    new_max = 1
+    new_min = -1
+    Xtr_new = (((Xtr_new - tr_min)* (new_max - new_min))/ (tr_max - tr_min) ) + new_min
+    Xts_new = (((Xts_new - tr_min)* (new_max - new_min))/ (tr_max - tr_min) ) + new_min
+
     ytr = np.array(ytrain)
     yts = np.array(ytest) 
     return Xtr_new, Xts_new, ytr, yts
@@ -244,17 +251,18 @@ def checkVector(classHVs, inputHV):
     count, checklist = {} ,[]
     for key in classHVs.keys():
         #print(classHVs[key])
-        count[key] = associateSearch(classHVs[key], inputHV)
-        # inner_product(classHVs[key], inputHV)
-        checklist.append([key, associateSearch(classHVs[key], inputHV)])
+        #count[key] = associateSearch(classHVs[key], inputHV)
+        #checklist.append([key, associateSearch(classHVs[key], inputHV)])
+        count[key] = np.inner(classHVs[key], inputHV)
+        checklist.append([key, np.inner(classHVs[key], inputHV)])
         if (count[key] > maximum):
             guess = key
             maximum = count[key]
     checklist = sorted(checklist, key = lambda x: x[1], reverse = -1)
     return guess, checklist
 
-def associateSearch(HV1, HV2):
-    return np.dot(HV1, HV2)/(np.linalg.norm(HV1) * np.linalg.norm(HV2) + 0.0)
+# def associateSearch(HV1, HV2):
+#     return np.dot(HV1, HV2)/(np.linalg.norm(HV1) * np.linalg.norm(HV2) + 0.0)
 
 ### Save AM and Item Memory into file
 def savemodel(am, baseVector, levelVector, levelList, fpath):
