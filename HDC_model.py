@@ -9,101 +9,152 @@ from sklearn.preprocessing import MinMaxScaler
 import os
 import random
 import argparse
+import sklearn
 import numpy as np
+
+# get rid of silences
+def trim_silence(audio, noise_threshold=150):
+    """ Removes the silence at the beginning and end of the passed audio data
+    :param audio: numpy array of audio
+    :param noise_threshold: the maximum amount of noise that is considered silence
+    :return: a trimmed numpy array
+    """
+    start = None
+    end = None
+
+    for idx, point in enumerate(audio):
+        if abs(point) > noise_threshold:
+            start = idx
+            break
+
+    # Reverse the array for trimming the end
+    for idx, point in enumerate(audio[::-1]):
+        if abs(point) > noise_threshold:
+            end = len(audio) - idx
+            break
+
+    return audio[start:end]
 
 # Converts time domain signal to its MFCCs
 def convertToMFCC2(sample_rate, signal):
+    # Trim Signal
+    trimmed_signal = trim_silence(signal)
+
+    # Make all samples the same length
+    normalized_size = 3   # 1000 ms
+    normalized_length = int(round(normalized_size * sample_rate))
+    num_z = np.zeros((normalized_length - len(trimmed_signal)))
+    new_signal = np.append(trimmed_signal, num_z)
+
     # Pre-Emphasis
     pre_emphasis = 0.97
-    emphasized_signal = np.append(signal[0], signal[1:] - pre_emphasis * signal[:-1])
+    emphasized_signal = np.append(new_signal[0], new_signal[1:] - pre_emphasis * new_signal[:-1])
 
-    # Framing
-    frame_size = 0.025      # Frame Size: 25ms
-    frame_stride = 0.01     # Stride: 10ms (means 15 ms overlap)
-    frame_length, frame_step = frame_size * sample_rate, frame_stride * sample_rate  # Convert from seconds to samples
-    signal_length = len(emphasized_signal)
-    frame_length = int(round(frame_length))
-    frame_step = int(round(frame_step))
-    num_frames = int(np.ceil(float(np.abs(signal_length - frame_length)) / frame_step))  # Make sure that we have at least 1 frame
+    chroma_stft = librosa.feature.chroma_stft(y=emphasized_signal, sr=sample_rate)
+    spec_cent = librosa.feature.spectral_centroid(y=emphasized_signal, sr=sample_rate)
+    spec_bw = librosa.feature.spectral_bandwidth(y=emphasized_signal, sr=sample_rate)
+    rolloff = librosa.feature.spectral_rolloff(y=emphasized_signal, sr=sample_rate)
+    zcr = librosa.feature.zero_crossing_rate(emphasized_signal)
+    mfcc = librosa.feature.mfcc(y=emphasized_signal, sr=sample_rate)
+    feature_set=np.hstack((chroma_stft.reshape(1,-1), spec_cent.reshape(1,-1), spec_bw.reshape(1,-1), rolloff.reshape(1,-1), zcr.reshape(1,-1)))
+    #feature_set=np.array([np.mean(chroma_stft), np.mean(spec_cent), np.mean(spec_bw), np.mean(rolloff), np.mean(zcr)])
+    for e in mfcc:
+        feature_set = np.append(feature_set, np.mean(e))
+    feature_set=feature_set.reshape(1,-1)
+    return feature_set
 
-    pad_signal_length = num_frames * frame_step + frame_length
-    z = np.zeros((pad_signal_length - signal_length))
-    pad_signal = np.append(emphasized_signal, z) # Pad Signal to make sure that all frames have equal number of samples without truncating any samples from the original signal
 
-    indices = np.tile(np.arange(0, frame_length), (num_frames, 1)) + np.tile(np.arange(0, num_frames * frame_step, frame_step), (frame_length, 1)).T
-    frames = pad_signal[indices.astype(np.int32, copy=False)]
+    # # Framing
+    # frame_size = 0.025      # Frame Size: 25ms
+    # frame_stride = 0.01     # Stride: 10ms (means 15 ms overlap)
+    # frame_length, frame_step = frame_size * sample_rate, frame_stride * sample_rate  # Convert from seconds to samples
+    # signal_length = len(emphasized_signal)
+    # frame_length = int(round(frame_length))
+    # frame_step = int(round(frame_step))
+    # num_frames = int(np.ceil(float(np.abs(signal_length - frame_length)) / frame_step))  # Make sure that we have at least 1 frame
 
-    # Window
-    frames *= np.hamming(frame_length)
+    # pad_signal_length = num_frames * frame_step + frame_length
+    # z = np.zeros((pad_signal_length - signal_length))
+    # pad_signal = np.append(emphasized_signal, z) # Pad Signal to make sure that all frames have equal number of samples without truncating any samples from the original signal
 
-    # Fourier-Transform and Power Spectrum
-    NFFT = 512
-    mag_frames = np.absolute(np.fft.rfft(frames, NFFT))  # Magnitude of the FFT
-    pow_frames = ((1.0 / NFFT) * ((mag_frames) ** 2))  # Power Spectrum
+    # indices = np.tile(np.arange(0, frame_length), (num_frames, 1)) + np.tile(np.arange(0, num_frames * frame_step, frame_step), (frame_length, 1)).T
+    # frames = pad_signal[indices.astype(np.int32, copy=False)]
 
-    # Filter Banks
-    nfilt = 40
-    low_freq_mel = 0
-    high_freq_mel = (2595 * np.log10(1 + (sample_rate / 2) / 700))  # Convert Hz to Mel
-    mel_points = np.linspace(low_freq_mel, high_freq_mel, nfilt + 2)  # Equally spaced in Mel scale
-    hz_points = (700 * (10**(mel_points / 2595) - 1))  # Convert Mel to Hz
-    bin = np.floor((NFFT + 1) * hz_points / sample_rate)
+    # # Window
+    # frames *= np.hamming(frame_length)
 
-    fbank = np.zeros((nfilt, int(np.floor(NFFT / 2 + 1))))
-    for m in range(1, nfilt + 1):
-        f_m_minus = int(bin[m - 1])   # left
-        f_m = int(bin[m])             # center
-        f_m_plus = int(bin[m + 1])    # right
-        for k in range(f_m_minus, f_m):
-            fbank[m - 1, k] = (k - bin[m - 1]) / (bin[m] - bin[m - 1])
-        for k in range(f_m, f_m_plus):
-            fbank[m - 1, k] = (bin[m + 1] - k) / (bin[m + 1] - bin[m])
-    filter_banks = np.dot(pow_frames, fbank.T)
-    filter_banks = np.where(filter_banks == 0, np.finfo(float).eps, filter_banks)  # Numerical Stability
-    filter_banks = 20 * np.log10(filter_banks)  # dB  
+    # # Fourier-Transform and Power Spectrum
+    # NFFT = 512
+    # mag_frames = np.absolute(np.fft.rfft(frames, NFFT))  # Magnitude of the FFT
+    # pow_frames = ((1.0 / NFFT) * ((mag_frames) ** 2))  # Power Spectrum
 
-    # Get Coefficients
-    num_ceps = 12
-    mfcc = dct(filter_banks, type=2, axis=1, norm='ortho')[:, 1 : (num_ceps + 1)] # Keep 2-13
+    # # Filter Banks
+    # nfilt = 40
+    # low_freq_mel = 0
+    # high_freq_mel = (2595 * np.log10(1 + (sample_rate / 2) / 700))  # Convert Hz to Mel
+    # mel_points = np.linspace(low_freq_mel, high_freq_mel, nfilt + 2)  # Equally spaced in Mel scale
+    # hz_points = (700 * (10**(mel_points / 2595) - 1))  # Convert Mel to Hz
+    # bin = np.floor((NFFT + 1) * hz_points / sample_rate)
 
-    # Normalization
-    mfcc -= (np.mean(mfcc, axis=0) + 1e-8)
+    # fbank = np.zeros((nfilt, int(np.floor(NFFT / 2 + 1))))
+    # for m in range(1, nfilt + 1):
+    #     f_m_minus = int(bin[m - 1])   # left
+    #     f_m = int(bin[m])             # center
+    #     f_m_plus = int(bin[m + 1])    # right
+    #     for k in range(f_m_minus, f_m):
+    #         fbank[m - 1, k] = (k - bin[m - 1]) / (bin[m] - bin[m - 1])
+    #     for k in range(f_m, f_m_plus):
+    #         fbank[m - 1, k] = (bin[m + 1] - k) / (bin[m + 1] - bin[m])
+    # filter_banks = np.dot(pow_frames, fbank.T)
+    # filter_banks = np.where(filter_banks == 0, np.finfo(float).eps, filter_banks)  # Numerical Stability
+    # filter_banks = 20 * np.log10(filter_banks)  # dB  
+
+    # # Get Coefficients
+    # num_ceps = 12
+    # mfcc = dct(filter_banks, type=2, axis=1, norm='ortho')[:, 1 : (num_ceps + 1)] # Keep 2-13
+
+    # # Normalization
+    # mfcc -= (np.mean(mfcc, axis=0) + 1e-8)
+    # mfcc = np.array(mfcc).flatten()
+    #print(mfcc.size)
+    #print(mfcc)
+    #return mfcc
 
     # MFCC-2
-    band_range_percentages, band_sums, band_sums_order, band_mean, band_std_dev = [], [], [], [], []
-    num_frames = mfcc.shape[0]
-    for y in range(mfcc.shape[1]):
-        # Get band percentages for new set of classes between min and max
-        class_tallies = [0] * 30
-        max = np.amax(mfcc[:,y])
-        min = np.amin(mfcc[:,y])
-        difference = max-min
-        step=difference/17 
-        new_range = np.arange(min, max, step)
+    # band_range_percentages, band_sums, band_sums_order, band_mean, band_std_dev = [], [], [], [], []
+    # num_frames = mfcc.shape[0]
+    # for y in range(mfcc.shape[1]):
+    #     # Get band percentages for new set of classes between min and max
+    #     class_tallies = [0] * 30
+    #     max = np.amax(mfcc[:,y])
+    #     min = np.amin(mfcc[:,y])
+    #     difference = max-min
+    #     step=difference/17 
+    #     new_range = np.arange(min, max, step)
 
-        for x in range(mfcc.shape[0]):
-            for i in range(new_range.size-1, -1, -1):
-                if (mfcc[x][y] > new_range[i]):
-                    class_tallies[i]=class_tallies[i]+1
-                    break
-        for i in range(0, len(class_tallies)):
-            class_tallies[i]=(class_tallies[i]/num_frames) *100
-        band_range_percentages.append(class_tallies)
+    #     for x in range(mfcc.shape[0]):
+    #         for i in range(new_range.size-1, -1, -1):
+    #             if (mfcc[x][y] > new_range[i]):
+    #                 class_tallies[i]=class_tallies[i]+1
+    #                 break
+    #     for i in range(0, len(class_tallies)):
+    #         class_tallies[i]=(class_tallies[i]/num_frames) *100
+    #     band_range_percentages.append(class_tallies)
 
-        # Get sum of values in band
-        band_sums.append(np.sum(mfcc[:,y]))
+    #     # Get sum of values in band
+    #     band_sums.append(np.sum(mfcc[:,y]))
 
-        # Get mean of values in band
-        band_mean.append(np.mean(mfcc[:,y]))
+    #     # Get mean of values in band
+    #     band_mean.append(np.mean(mfcc[:,y]))
 
-        # Get standard deviation of values in band
-        band_std_dev.append(np.std(mfcc[:,y]))
+    #     # Get standard deviation of values in band
+    #     band_std_dev.append(np.std(mfcc[:,y]))
     
-    band_sums_order = np.argsort(band_sums)
-    band_sums_order = band_sums_order + 1
+    # band_sums_order = np.argsort(band_sums)
+    # band_sums_order = band_sums_order + 1
 
-    # Concatenate features for sample
-    return np.concatenate((band_range_percentages, band_sums_order, band_mean, band_std_dev), axis=None)
+    # # Concatenate features for sample
+    # return np.concatenate((band_range_percentages, band_sums_order, band_mean, band_std_dev), axis=None)
 
 # Normalizes data between -1 and 1
 #def normalizeData(data, new_min=-1, new_max=1):
@@ -112,7 +163,7 @@ def convertToMFCC2(sample_rate, signal):
 
 # Loading training and testing data
 def dataLoader(filepath):
-    num_features = 396
+    num_features = 772
     Xtr = np.empty((0,num_features), int)
     Xts = np.empty((0,num_features), int)
     ytrain = []
@@ -125,12 +176,12 @@ def dataLoader(filepath):
             ytest.append(classification)
             test_samples, test_samp_rate = librosa.load(filepath+filename, sr = None, mono =True, offset = 0.0, duration = None)
             mfccs = convertToMFCC2(test_samp_rate, test_samples)
-            Xts = np.append(Xts, np.array([mfccs]), axis=0)
+            Xts = np.append(Xts, mfccs, axis=0)
         else:
             ytrain.append(classification)
             test_samples, test_samp_rate = librosa.load(filepath+filename, sr = None, mono =True, offset = 0.0, duration = None)
             mfccs = convertToMFCC2(test_samp_rate, test_samples)
-            Xtr = np.append(Xtr, np.array([mfccs]), axis=0) 
+            Xtr = np.append(Xtr, mfccs, axis=0) 
     
     new_train= np.append(Xtr, np.array([ytrain]).reshape(-1,1), axis=1)
     # print(new_train)
@@ -145,9 +196,9 @@ def dataLoader(filepath):
     # print(df)
     corr_matrix=df.corr()
     # print(corr_matrix)
-    print(corr_matrix['397'].sort_values(ascending=False))
+    print(corr_matrix['773'].sort_values(ascending=False))
 
-    outcomes = np.array([corr_matrix['397']])
+    outcomes = np.array([corr_matrix['773']])
     print(outcomes)
     indices_nan = np.argwhere(np.isnan(outcomes))
     indices_bad = np.argwhere(np.logical_and(abs(outcomes)< 0.01, abs(outcomes) >= 0) )
@@ -158,12 +209,12 @@ def dataLoader(filepath):
     # scaler = MinMaxScaler((-1,1)).fit(Xtr_new)      
     # Xtr_new= scaler.transform(Xtr_new)
     # Xts_new= scaler.transform(Xts_new)
-    tr_max = Xtr_new.max()
-    tr_min = Xtr_new.min()
+    tr_max = Xtr.max()
+    tr_min = Xtr.min()
     new_max = 1
     new_min = -1
-    Xtr_new = (((Xtr_new - tr_min)* (new_max - new_min))/ (tr_max - tr_min) ) + new_min
-    Xts_new = (((Xts_new - tr_min)* (new_max - new_min))/ (tr_max - tr_min) ) + new_min
+    Xtr_new = (((Xtr - tr_min)* (new_max - new_min))/ (tr_max - tr_min) ) + new_min
+    Xts_new = (((Xts - tr_min)* (new_max - new_min))/ (tr_max - tr_min) ) + new_min
 
     ytr = np.array(ytrain)
     yts = np.array(ytest) 
@@ -273,7 +324,7 @@ def savemodel(am, baseVector, levelVector, levelList, fpath):
 
 def main(dimension, iteration, training, testing):
     # initializes the HDC object and its values
-    HDC = HyperDimensionalComputing(dimension, totalPos = training[0].shape[1], totalLevel = 5000, datatype = np.int16, buffer = [-1.5, 1.5], cuda = False)
+    HDC = HyperDimensionalComputing(dimension, totalPos = training[0].shape[1], totalLevel = 5000, datatype = np.int16, buffer = [-1, 1], cuda = False)
     # separates the training images/labels and the testing images/labels
     trainingData, testingData, trainLabel, testLabel = training[0], testing[0], genLabel(training[1]), genLabel(testing[1])
     print("Running ...")
